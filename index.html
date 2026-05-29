@@ -14,7 +14,7 @@
   #bar button:disabled { opacity:.5; cursor:default; }
   #hint { color:#888; }
   #canvas { flex:1; position:relative; overflow:hidden; background:#fff; touch-action:none; }
-  #stage { position:absolute; top:0; left:0; will-change:transform; }
+  #stage { position:absolute; top:0; left:0; will-change:transform; transition:opacity .15s; }
   #stage svg { max-width:none !important; height:auto; }
   #stage .node { cursor:pointer; }
   #stage .dim { opacity:.12; transition:opacity .15s; }
@@ -27,12 +27,11 @@
 <div id="app">
   <div id="bar">
     <strong>전체 상호참조 맵</strong>
-    <button id="reset">초기화</button>
-    <button id="focus" disabled>포커스: 켜기</button>
+    <button id="reset">전체 보기</button>
     <button id="zin">+ 확대</button>
     <button id="zout">− 축소</button>
     <button id="zfit">맞춤</button>
-    <span id="hint">노드 클릭 = 관련만 강조 · 더블클릭 = 관련만 보기 · 휠 = 확대/축소 · 배경 드래그 = 이동</span>
+    <span id="hint">노드 클릭 = 관련 항목만 모아보기 · '전체 보기'로 복귀 · 휠 = 확대/축소 · 배경 드래그 = 이동</span>
   </div>
   <div id="canvas">
     <div id="stage"></div>
@@ -48,32 +47,54 @@ const MERMAID = /*MMD_START*/"graph LR\n  R_001[\"R-001<br/>강좌 운영 현황
 const stage = document.getElementById('stage');
 const canvas = document.getElementById('canvas');
 const tip = document.getElementById('tip');
-const focusBtn = document.getElementById('focus');
 
 const byId = new Map(DATA.nodes.map(function (n) { return [n.id, n]; }));
 const adj = new Map(DATA.nodes.map(function (n) { return [n.id, new Set()]; }));
 for (const e of DATA.edges) { if (adj.get(e.source)) adj.get(e.source).add(e.target); if (adj.get(e.target)) adj.get(e.target).add(e.source); }
 
-let selected = null, focusMode = false, lastId = null, lastT = 0;
 let s = 1, tx = 0, ty = 0, gw = 0, gh = 0;
-const nodeEl = new Map();
-let edgeList = [];
+let root = null, seq = 0;
+let nodeEl = new Map();
 
 mermaid.initialize({ startOnLoad: false, theme: 'base', flowchart: { htmlLabels: true, curve: 'basis' } });
 
-const out = await mermaid.render('docmapGraph', MERMAID);
-stage.innerHTML = out.svg;
-const loading = document.getElementById('loading'); if (loading) loading.remove();
-const root = stage.querySelector('svg');
-const vb = root.viewBox && root.viewBox.baseVal;
-gw = (vb && vb.width) ? vb.width : root.getBBox().width;
-gh = (vb && vb.height) ? vb.height : root.getBBox().height;
-root.removeAttribute('width'); root.removeAttribute('height');
-root.style.width = gw + 'px'; root.style.height = gh + 'px'; root.style.maxWidth = 'none';
-wire();
-fit();
+function mmId(id) { return id.replace(/-/g, '_'); }
+function mmLabel(v) { return String(v == null ? '' : v).replace(/"/g, "'"); }
+function classOf(n) { return n.resolved === false ? 'miss' : (n.type === 'r' ? (n.priority === 'P1' ? 'r1' : 'r0') : n.type); }
+const CLASSDEFS = [
+  '  classDef sc fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;',
+  '  classDef r0 fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;',
+  '  classDef r1 fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c;',
+  '  classDef ux fill:#fff3e0,stroke:#ef6c00,color:#e65100;',
+  '  classDef miss fill:#ffebee,stroke:#c62828,color:#b71c1c;'
+];
+function buildMmd(ids) {
+  const set = new Set(ids);
+  const lines = ['graph LR'];
+  for (const n of DATA.nodes) { if (!set.has(n.id)) continue; lines.push('  ' + mmId(n.id) + '["' + mmLabel(n.id) + '<br/>' + mmLabel(n.label) + '"]:::' + classOf(n)); }
+  for (const e of DATA.edges) { if (set.has(e.source) && set.has(e.target)) lines.push('  ' + mmId(e.source) + ' --> ' + mmId(e.target)); }
+  return lines.concat(CLASSDEFS).join('\n');
+}
+function neighborhood(id) { const a = [id]; (adj.get(id) || new Set()).forEach(function (x) { a.push(x); }); return a; }
+
+async function show(src) {
+  stage.style.opacity = '0';
+  const out = await mermaid.render('g' + (seq++), src);
+  stage.innerHTML = out.svg;
+  root = stage.querySelector('svg');
+  const vb = root.viewBox && root.viewBox.baseVal;
+  gw = (vb && vb.width) ? vb.width : root.getBBox().width;
+  gh = (vb && vb.height) ? vb.height : root.getBBox().height;
+  root.removeAttribute('width'); root.removeAttribute('height');
+  root.style.width = gw + 'px'; root.style.height = gh + 'px'; root.style.maxWidth = 'none';
+  wire();
+  fit();
+  stage.style.opacity = '1';
+  const loading = document.getElementById('loading'); if (loading) loading.remove();
+}
 
 function wire() {
+  nodeEl = new Map();
   function nodeDocId(el) {
     const txt = el.textContent || '';
     const m = txt.match(/(UX-[A-Z0-9]+-\d{3}|R-\d{3}|SC-\d{2})/);
@@ -85,45 +106,20 @@ function wire() {
     const docId = nodeDocId(el);
     if (!docId) return;
     nodeEl.set(docId, el);
-    el.addEventListener('click', function (ev) { ev.stopPropagation(); onTap(docId); });
+    el.addEventListener('click', function (ev) { ev.stopPropagation(); show(buildMmd(neighborhood(docId))); });
     el.addEventListener('mouseenter', function (ev) { showTip(ev, docId); });
     el.addEventListener('mousemove', moveTip);
     el.addEventListener('mouseleave', hideTip);
   });
-  const paths = stage.querySelectorAll('.edgePaths path');
-  edgeList = DATA.edges.map(function (e, i) { return { e: e, el: paths[i] }; });
 }
-function nb(id) { const s = new Set([id]); (adj.get(id) || new Set()).forEach(function (x) { s.add(x); }); return s; }
-function applyState() {
-  const set = selected ? nb(selected) : null;
-  for (const n of DATA.nodes) {
-    const el = nodeEl.get(n.id); if (!el) continue;
-    const keep = !set || set.has(n.id);
-    el.classList.toggle('dim', !!(set && !keep));
-    el.classList.toggle('gone', !!(focusMode && set && !keep));
-  }
-  for (const it of edgeList) {
-    if (!it.el) continue;
-    const both = set && set.has(it.e.source) && set.has(it.e.target);
-    it.el.classList.toggle('dim', !!(set && !both));
-    it.el.classList.toggle('gone', !!(focusMode && set && !both));
-  }
-}
-function onTap(id) {
-  const now = performance.now();
-  if (lastId === id && now - lastT < 300) { selected = id; focusMode = true; }
-  else { selected = (selected === id) ? null : id; if (!selected) focusMode = false; }
-  lastId = id; lastT = now; syncBtn(); applyState();
-}
-function syncBtn() { focusBtn.disabled = !selected; focusBtn.textContent = '포커스: ' + (focusMode ? '끄기' : '켜기'); }
+
 function showTip(ev, id) { const n = byId.get(id); tip.textContent = id + ' — ' + (n && n.full ? n.full : id); tip.style.opacity = '1'; moveTip(ev); }
 function moveTip(ev) { const r = canvas.getBoundingClientRect(); tip.style.left = (ev.clientX - r.left + 12) + 'px'; tip.style.top = (ev.clientY - r.top + 12) + 'px'; }
 function hideTip() { tip.style.opacity = '0'; }
 
-document.getElementById('reset').addEventListener('click', function () { selected = null; focusMode = false; syncBtn(); applyState(); });
-focusBtn.addEventListener('click', function () { if (!selected) return; focusMode = !focusMode; syncBtn(); applyState(); });
+document.getElementById('reset').addEventListener('click', function () { show(MERMAID); });
 
-function zoomApply() { root.style.transformOrigin = '0 0'; root.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + s + ')'; }
+function zoomApply() { if (!root) return; root.style.transformOrigin = '0 0'; root.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + s + ')'; }
 function fit() {
   const cw = canvas.clientWidth || 800, ch = canvas.clientHeight || 600;
   const sc = Math.min(cw / (gw || cw), ch / (gh || ch)) * 0.95;
@@ -148,10 +144,11 @@ canvas.addEventListener('pointerdown', function (ev) {
   if (ev.target.closest && ev.target.closest('.node')) return;
   drag = { x: ev.clientX, y: ev.clientY, tx: tx, ty: ty };
   canvas.setPointerCapture(ev.pointerId);
-  selected = null; focusMode = false; syncBtn(); applyState();
 });
 canvas.addEventListener('pointermove', function (ev) { if (!drag) return; tx = drag.tx + (ev.clientX - drag.x); ty = drag.ty + (ev.clientY - drag.y); zoomApply(); });
 canvas.addEventListener('pointerup', function () { drag = null; });
+
+await show(MERMAID);
 </script>
 </body>
 </html>
