@@ -55,6 +55,7 @@ const adj = new Map(DATA.nodes.map(function (n) { return [n.id, new Set()]; }));
 for (const e of DATA.edges) { if (adj.get(e.source)) adj.get(e.source).add(e.target); if (adj.get(e.target)) adj.get(e.target).add(e.source); }
 
 let selected = null, focusMode = false, lastId = null, lastT = 0;
+let s = 1, tx = 0, ty = 0, gw = 0, gh = 0;
 const nodeEl = new Map();
 let edgeList = [];
 
@@ -64,7 +65,11 @@ const out = await mermaid.render('docmapGraph', MERMAID);
 stage.innerHTML = out.svg;
 const loading = document.getElementById('loading'); if (loading) loading.remove();
 const root = stage.querySelector('svg');
+const vb = root.viewBox && root.viewBox.baseVal;
+gw = (vb && vb.width) ? vb.width : root.getBBox().width;
+gh = (vb && vb.height) ? vb.height : root.getBBox().height;
 root.removeAttribute('width'); root.removeAttribute('height');
+root.style.width = gw + 'px'; root.style.height = gh + 'px'; root.style.maxWidth = 'none';
 wire();
 fit();
 
@@ -118,9 +123,15 @@ function hideTip() { tip.style.opacity = '0'; }
 document.getElementById('reset').addEventListener('click', function () { selected = null; focusMode = false; syncBtn(); applyState(); });
 focusBtn.addEventListener('click', function () { if (!selected) return; focusMode = !focusMode; syncBtn(); applyState(); });
 
-let s = 1, tx = 0, ty = 0;
 function zoomApply() { root.style.transformOrigin = '0 0'; root.style.transform = 'translate(' + tx + 'px,' + ty + 'px) scale(' + s + ')'; }
-function fit() { s = 1; tx = 0; ty = 0; zoomApply(); }
+function fit() {
+  const cw = canvas.clientWidth || 800, ch = canvas.clientHeight || 600;
+  const sc = Math.min(cw / (gw || cw), ch / (gh || ch)) * 0.95;
+  s = (isFinite(sc) && sc > 0) ? Math.min(sc, 1.5) : 1;
+  tx = Math.max(0, (cw - gw * s) / 2);
+  ty = Math.max(0, (ch - gh * s) / 2);
+  zoomApply();
+}
 document.getElementById('zin').addEventListener('click', function () { s = Math.min(4, s * 1.2); zoomApply(); });
 document.getElementById('zout').addEventListener('click', function () { s = Math.max(0.2, s / 1.2); zoomApply(); });
 document.getElementById('zfit').addEventListener('click', fit);
